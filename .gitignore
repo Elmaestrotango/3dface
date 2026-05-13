@@ -3,8 +3,5 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 _gen_pfs.py
-_check_triggers.py
-_check_transport.py
-_fps_test*.py
-add_firewall_rule.ps1
+_*.py
 campy/.git/

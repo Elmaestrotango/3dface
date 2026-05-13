@@ -2,6 +2,8 @@
 # requires-python = ">=3.10,<3.12"
 # dependencies = [
 #     "sleap-anipose>=0.1.8",
+#     "numpy<2",
+#     "imageio-ffmpeg",
 # ]
 # ///
 """Multi-view camera calibration using sleap-anipose.
@@ -9,23 +11,65 @@
 Run with: uv run 1_calibrate.py <session_dir>
 
 The session directory should contain a calibration/ subfolder with per-camera
-video subdirectories (cam1/, cam2/, ...) produced by 0a_acquire.ipynb.
+video subdirectories (cam1/, cam2/, ...) produced by the Panopticon GUI.
 
 Outputs calibration.toml into the calibration directory.
 """
 import argparse
+import subprocess
 from pathlib import Path
 
 import sleap_anipose as slap
+from imageio_ffmpeg import get_ffmpeg_exe
 
+FFMPEG = get_ffmpeg_exe()
 
-# -- Board parameters (ChArUco 5x5, ArUco 4x4_1000) -----------------------
-BOARD_X = 5
-BOARD_Y = 5
-SQUARE_LENGTH = 24.0  # mm
-MARKER_LENGTH = 18.75  # mm
+# -- Board parameters (ChArUco 8x8, ArUco DICT_4x4) -----------------------
+BOARD_X = 8
+BOARD_Y = 8
+SQUARE_LENGTH = 15.0  # mm (1.5 cm checkerboard square)
+MARKER_LENGTH = 10.0  # mm (4x4 data bits x 2.5mm each)
 MARKER_BITS = 4
 DICT_SIZE = 1000
+
+# -- Subsampling -----------------------------------------------------------
+DEFAULT_MAX_FRAMES = 200
+
+
+def subsample_video(src: Path, dst: Path, max_frames: int):
+    """Create a subsampled copy of a video using ffmpeg."""
+    # Get frame count via ffprobe
+    probe = subprocess.run(
+        [FFMPEG, "-i", str(src), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    # Count frames from stderr
+    lines = probe.stderr.split("\n")
+    n_frames = 0
+    for line in lines:
+        if "frame=" in line:
+            parts = line.split("frame=")[-1].strip().split()
+            if parts:
+                try:
+                    n_frames = int(parts[0])
+                except ValueError:
+                    pass
+
+    if n_frames <= max_frames:
+        import shutil
+        shutil.copy2(src, dst)
+        return n_frames
+
+    # Calculate select interval
+    step = n_frames / max_frames
+    subprocess.run(
+        [FFMPEG, "-y", "-i", str(src),
+         "-vf", f"select=not(mod(n\\,{int(step)}))",
+         "-vsync", "vfr", "-an",
+         str(dst)],
+        capture_output=True,
+    )
+    return max_frames
 
 
 def main():
@@ -42,6 +86,12 @@ def main():
         nargs="*",
         default=[],
         help="Camera names to exclude from calibration (e.g. cam5 cam6)",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=DEFAULT_MAX_FRAMES,
+        help=f"Max frames per camera for calibration (default: {DEFAULT_MAX_FRAMES})",
     )
     args = parser.parse_args()
 
@@ -66,13 +116,32 @@ def main():
     )
     print(f"Board config: {board_toml}")
 
+    # Subsample calibration videos and place where sleap-anipose expects them
+    for cam_dir in sorted(calib_dir.iterdir()):
+        if not cam_dir.is_dir() or not cam_dir.name.startswith("cam"):
+            continue
+        # Only match MP4s directly in cam dir (not in subdirectories)
+        mp4s = [f for f in cam_dir.iterdir() if f.is_file() and f.suffix == ".mp4" and "calibration" in f.name]
+        if not mp4s:
+            continue
+        img_dir = cam_dir / "calibration_images"
+        img_dir.mkdir(exist_ok=True)
+        dst = img_dir / mp4s[0].name
+        if not dst.exists():
+            n = subsample_video(mp4s[0], dst, args.max_frames)
+            print(f"  {cam_dir.name}: subsampled to {n} frames")
+        else:
+            print(f"  {cam_dir.name}: using existing subsampled video")
+
     # Run calibration
     calib_fname = calib_dir / "calibration.toml"
     metadata_fname = calib_dir / "calibration_metadata.h5"
     histogram_path = calib_dir / "reprojection_error_histogram.png"
     reproj_path = calib_dir / "reprojections"
 
-    excluded = tuple(args.excluded_views)
+    # Exclude any non-camera directories (reprojections, etc.)
+    non_cam_dirs = [d.name for d in calib_dir.iterdir() if d.is_dir() and not d.name.startswith("cam")]
+    excluded = tuple(list(args.excluded_views) + non_cam_dirs)
 
     cgroup, metadata = slap.calibrate(
         session=str(calib_dir),

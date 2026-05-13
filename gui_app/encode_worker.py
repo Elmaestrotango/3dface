@@ -1,12 +1,19 @@
 """Background encoding worker — converts raw.bin files to H.264 MP4 via NVENC."""
 import os
 import subprocess
+import sys
 from pathlib import Path
 from PyQt5.QtCore import QThread, pyqtSignal
 from imageio_ffmpeg import get_ffmpeg_exe
 
 
 FFMPEG = get_ffmpeg_exe()
+
+_STARTUPINFO = None
+if sys.platform == "win32":
+    _STARTUPINFO = subprocess.STARTUPINFO()
+    _STARTUPINFO.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _STARTUPINFO.wShowWindow = 0
 
 
 class EncodeWorker(QThread):
@@ -61,7 +68,7 @@ class EncodeWorker(QThread):
             ]
 
             try:
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd, check=True, capture_output=True, startupinfo=_STARTUPINFO)
                 os.remove(raw_path)
                 results.append((cam, n_frames, True))
             except subprocess.CalledProcessError:

@@ -30,13 +30,13 @@ class CameraManager(QObject):
     def open_all(self, pfs_path: str):
         tlf = pylon.TlFactory.GetInstance()
         devices = tlf.EnumerateDevices()
-        if len(devices) < 6:
-            self.error.emit(f"Found {len(devices)} cameras, expected 6")
+        if len(devices) == 0:
+            self.error.emit("No cameras found")
             return False
 
         sorted_devs = sorted(devices, key=lambda d: d.GetSerialNumber())
 
-        for dev in sorted_devs[:6]:
+        for dev in sorted_devs:
             cam = pylon.InstantCamera(tlf.CreateDevice(dev))
             cam.Open()
             pylon.FeaturePersistence.Load(pfs_path, cam.GetNodeMap(), False)

@@ -2,8 +2,8 @@
 from datetime import datetime
 from pathlib import Path
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QLineEdit, QLabel,
-    QProgressBar, QFrame, QPushButton, QFileDialog,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
+    QProgressBar, QFrame, QPushButton, QFileDialog, QSlider,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
@@ -14,6 +14,7 @@ from gui_app.widgets.toggle_switch import ToggleSwitch
 class SidebarWidget(QWidget):
     calibrate_toggled = pyqtSignal(bool)
     record_toggled = pyqtSignal(bool)
+    run_calibration_clicked = pyqtSignal()
 
     def __init__(self, default_output_dir: str = r"C:\Users\isaac\Desktop\3dpose\data", parent=None):
         super().__init__(parent)
@@ -92,8 +93,67 @@ class SidebarWidget(QWidget):
         self._record_toggle = ToggleSwitch("Record", QColor(234, 67, 53))
         self._calibrate_toggle.toggled.connect(self._on_calibrate)
         self._record_toggle.toggled.connect(self._on_record)
-        layout.addWidget(self._calibrate_toggle)
+
+        calib_row = QHBoxLayout()
+        calib_row.setSpacing(6)
+        calib_row.addWidget(self._calibrate_toggle, stretch=1)
+        self._run_calib_btn = QPushButton("Solve")
+        self._run_calib_btn.setFixedSize(50, 28)
+        self._run_calib_btn.setToolTip("Run sleap-anipose calibration on recorded videos")
+        self._run_calib_btn.setStyleSheet(
+            "QPushButton { background: #2a2a4a; color: #88aadd; border: 1px solid #444; "
+            "border-radius: 3px; font-size: 10px; }"
+            "QPushButton:hover { background: #333366; border-color: #5078c8; }"
+            "QPushButton:disabled { color: #555; border-color: #333; }"
+        )
+        self._run_calib_btn.clicked.connect(self.run_calibration_clicked.emit)
+        calib_row.addWidget(self._run_calib_btn)
+        layout.addLayout(calib_row)
+
         layout.addWidget(self._record_toggle)
+
+        layout.addSpacing(12)
+
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.HLine)
+        sep3.setStyleSheet("color: #444;")
+        layout.addWidget(sep3)
+        layout.addSpacing(4)
+
+        display_label = QLabel("Display")
+        display_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        display_label.setStyleSheet("color: #dcdcdc; border: none;")
+        layout.addWidget(display_label)
+
+        slider_style = (
+            "QSlider::groove:horizontal { background: #1a1a2e; height: 4px; border-radius: 2px; }"
+            "QSlider::handle:horizontal { background: #5078c8; width: 12px; margin: -4px 0; border-radius: 6px; }"
+            "QSlider::sub-page:horizontal { background: #5078c8; border-radius: 2px; }"
+        )
+
+        bright_row = QHBoxLayout()
+        bright_lbl = QLabel("Brightness")
+        bright_lbl.setStyleSheet("color: #aaa; font-size: 10px; border: none;")
+        bright_lbl.setFixedWidth(65)
+        self._brightness_slider = QSlider(Qt.Horizontal)
+        self._brightness_slider.setRange(-100, 100)
+        self._brightness_slider.setValue(0)
+        self._brightness_slider.setStyleSheet(slider_style)
+        bright_row.addWidget(bright_lbl)
+        bright_row.addWidget(self._brightness_slider)
+        layout.addLayout(bright_row)
+
+        contrast_row = QHBoxLayout()
+        contrast_lbl = QLabel("Contrast")
+        contrast_lbl.setStyleSheet("color: #aaa; font-size: 10px; border: none;")
+        contrast_lbl.setFixedWidth(65)
+        self._contrast_slider = QSlider(Qt.Horizontal)
+        self._contrast_slider.setRange(-100, 100)
+        self._contrast_slider.setValue(0)
+        self._contrast_slider.setStyleSheet(slider_style)
+        contrast_row.addWidget(contrast_lbl)
+        contrast_row.addWidget(self._contrast_slider)
+        layout.addLayout(contrast_row)
 
         layout.addSpacing(8)
 
@@ -144,6 +204,14 @@ class SidebarWidget(QWidget):
         else:
             self._calibrate_toggle.setEnabled(True)
         self.record_toggled.emit(checked)
+
+    @property
+    def brightness(self) -> int:
+        return self._brightness_slider.value()
+
+    @property
+    def contrast(self) -> int:
+        return self._contrast_slider.value()
 
     def get_field_values(self) -> dict:
         return {k: v.text() for k, v in self._fields.items()}

@@ -11,7 +11,7 @@ import pypylon.pylon as pylon
 class GrabThread(QThread):
     def __init__(self, cam_index: int, camera: pylon.InstantCamera,
                  raw_path: Path = None, display_every: int = 1,
-                 downsample: int = 6):
+                 downsample: int = 3):
         super().__init__()
         self._cam_index = cam_index
         self._camera = camera

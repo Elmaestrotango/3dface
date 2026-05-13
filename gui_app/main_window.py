@@ -1,18 +1,22 @@
 """Main application window — wires cameras, sidebar, state machine, and encoding."""
+import shutil
 import numpy as np
 from enum import Enum
 from pathlib import Path
 
 from PyQt5.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QApplication, QMessageBox
 from PyQt5.QtCore import QTimer
-from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtGui import QPalette, QColor, QIcon
 
 from gui_app.camera_manager import CameraManager
 from gui_app.serial_controller import TeensyController
 from gui_app.encode_worker import EncodeWorker
+from gui_app.calibration_worker import CalibrationWorker
 from gui_app.session_config import SessionConfig
 from gui_app.widgets.camera_grid import CameraGridWidget
 from gui_app.widgets.sidebar import SidebarWidget
+
+CALIBRATION_SCRIPT = Path(__file__).parent.parent / "1_calibrate.py"
 
 
 class State(Enum):
@@ -25,13 +29,17 @@ class State(Enum):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("3DPose Acquisition")
-        self.setMinimumSize(1280, 540)
+        self.setWindowTitle("Panopticon")
+        self.setMinimumSize(1000, 400)
+        icon_path = Path(__file__).parent.parent / "panopticon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self._apply_theme()
 
         self._state = State.IDLE
         self._acq_type = ""
         self._encode_worker: EncodeWorker | None = None
+        self._calib_worker: CalibrationWorker | None = None
         self._config: SessionConfig | None = None
         self._video_dir: Path | None = None
 
@@ -58,6 +66,7 @@ class MainWindow(QMainWindow):
 
         self._sidebar.calibrate_toggled.connect(self._on_calibrate_toggle)
         self._sidebar.record_toggled.connect(self._on_record_toggle)
+        self._sidebar.run_calibration_clicked.connect(self._on_run_calibration)
         self._camera_mgr.error.connect(self._on_camera_error)
 
         self._display_timer = QTimer()
@@ -65,9 +74,21 @@ class MainWindow(QMainWindow):
         self._display_timer.start(33)
 
         pfs = str(SessionConfig().pfs_path)
-        if not self._camera_mgr.open_all(pfs):
+        if self._camera_mgr.open_all(pfs):
+            n = self._camera_mgr.num_cameras
+            self._camera_grid.setup_grid(n)
+            self._camera_names = [f"cam{i+1}" for i in range(n)]
+        else:
+            self._camera_grid.setup_grid(0)
+            self._camera_names = []
             QTimer.singleShot(100, lambda: QMessageBox.warning(
-                self, "Camera Error", "Could not open all 6 cameras. Check connections."))
+                self, "Camera Error", "No cameras found. Check connections."))
+
+        sidebar_w = 260
+        grid_aspect = self._camera_grid.grid_aspect()
+        target_h = 700
+        target_w = int(target_h * grid_aspect) + sidebar_w
+        self.resize(target_w, target_h)
 
         self._sidebar.set_status("IDLE", "#888")
 
@@ -90,9 +111,21 @@ class MainWindow(QMainWindow):
 
     def _refresh_displays(self):
         self._display_tick = getattr(self, '_display_tick', 0) + 1
+        brightness = self._sidebar.brightness
+        contrast = self._sidebar.contrast
+
         for i, frame in enumerate(self._camera_mgr.latest_frames):
             if frame is not None:
+                if brightness != 0 or contrast != 0:
+                    f = frame.astype(np.float32)
+                    if contrast != 0:
+                        factor = (100 + contrast) / 100
+                        f = 128 + factor * (f - 128)
+                    if brightness != 0:
+                        f = f + brightness
+                    frame = np.clip(f, 0, 255).astype(np.uint8)
                 self._camera_grid.update_frame(i, frame)
+
         if self._display_tick % 10 == 0:
             for i, fps in enumerate(self._camera_mgr.current_fps):
                 self._camera_grid.update_fps(i, fps)
@@ -109,6 +142,7 @@ class MainWindow(QMainWindow):
             cage=vals["cage"],
             notes=vals["notes"],
             base_data_dir=Path(self._sidebar.output_dir),
+            camera_names=self._camera_names,
         )
 
     def _on_calibrate_toggle(self, checked):
@@ -138,11 +172,13 @@ class MainWindow(QMainWindow):
                 self._sidebar.reset_toggles()
                 return
 
-        self._video_dir = self._config.ensure_dirs(acq_type)
+        self._video_dir = video_dir
+        for cam in self._camera_names:
+            (self._video_dir / cam).mkdir(parents=True, exist_ok=True)
 
         raw_paths = [
             self._video_dir / cam / "raw.bin"
-            for cam in self._config.camera_names
+            for cam in self._camera_names
         ]
 
         self._camera_mgr.start_acquisition(raw_paths)
@@ -175,7 +211,7 @@ class MainWindow(QMainWindow):
 
         self._encode_worker = EncodeWorker(
             self._video_dir,
-            self._config.camera_names,
+            self._camera_names,
             self._acq_type,
             self._config.frame_width,
             self._config.frame_height,
@@ -197,7 +233,7 @@ class MainWindow(QMainWindow):
         for i, (count, timestamps) in enumerate(cam_results):
             if not timestamps:
                 continue
-            cam = self._config.camera_names[i]
+            cam = self._camera_names[i]
             cam_dir = self._video_dir / cam
 
             timestamps = timestamps[:min_frames]
@@ -251,6 +287,45 @@ class MainWindow(QMainWindow):
             15000,
         )
 
+    def _on_run_calibration(self):
+        config = self._build_config()
+        calib_dir = config.video_dir("calibration")
+
+        if not calib_dir.exists():
+            QMessageBox.warning(self, "No Data", f"Calibration directory not found:\n{calib_dir}")
+            return
+
+        mp4s = list(calib_dir.rglob("*.mp4"))
+        if not mp4s:
+            QMessageBox.warning(self, "No Data", f"No calibration videos found in:\n{calib_dir}")
+            return
+
+        self._sidebar.set_status("CALIBRATING...", "#aa88ff")
+        self._sidebar.set_toggles_enabled(False)
+        self.statusBar().showMessage("Running sleap-anipose calibration...")
+
+        self._calib_worker = CalibrationWorker(config.session_dir, CALIBRATION_SCRIPT)
+        self._calib_worker.status.connect(lambda s: self.statusBar().showMessage(s))
+        self._calib_worker.finished.connect(self._on_calibration_done)
+        self._calib_worker.start()
+
+    def _on_calibration_done(self, success: bool, msg: str):
+        self._sidebar.set_toggles_enabled(True)
+        self._sidebar.set_status("IDLE", "#888")
+        if success:
+            config = self._build_config()
+            src = config.video_dir("calibration") / "calibration.toml"
+            dst = config.video_dir("recording") / "calibration.toml"
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                self.statusBar().showMessage(f"Calibration solved — copied to {dst}", 10000)
+            else:
+                self.statusBar().showMessage("Calibration solved (no toml found to copy)", 10000)
+        else:
+            QMessageBox.warning(self, "Calibration Failed", msg[:500])
+            self.statusBar().showMessage("Calibration failed", 10000)
+
     def _on_camera_error(self, msg: str):
         QMessageBox.critical(self, "Error", msg)
 
@@ -262,4 +337,6 @@ class MainWindow(QMainWindow):
         self._camera_mgr.close_all()
         if self._encode_worker and self._encode_worker.isRunning():
             self._encode_worker.wait(5000)
+        if self._calib_worker and self._calib_worker.isRunning():
+            self._calib_worker.wait(5000)
         event.accept()
