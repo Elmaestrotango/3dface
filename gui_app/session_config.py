@@ -108,6 +108,7 @@ class SessionConfig:
         return d
 
     def save_metadata(self):
+        now = datetime.now()
         meta = dict(
             date=self.date, session_id=self.session_id,
             mouse_1=self.mouse_1, mouse_2=self.mouse_2,
@@ -115,6 +116,8 @@ class SessionConfig:
             experimenter=self.experimenter, notes=self.notes,
             num_cameras=len(self.camera_names), camera_names=self.camera_names,
             frame_rate=self.frame_rate, resolution=[self.frame_width, self.frame_height],
+            time_of_day=now.strftime("%H:%M:%S"),
+            timestamp_iso=now.isoformat(),
         )
         self.session_dir.mkdir(parents=True, exist_ok=True)
         path = self.session_dir / "session_metadata.json"
