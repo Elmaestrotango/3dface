@@ -1,8 +1,47 @@
 """Session configuration and path management."""
 import json
+import yaml
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+
+PROFILES_DIR = Path(__file__).parent.parent / "profiles"
+
+
+@dataclass
+class RigProfile:
+    name: str = "default"
+    frame_width: int = 1920
+    frame_height: int = 1200
+    frame_rate: int = 100
+    quality: int = 21
+    pfs_path: str = ""
+    output_dir: str = ""
+    serial_port: str = "COM3"
+    trigger_pins: list = field(default_factory=lambda: [2, 4, 6, 8, 10, 12])
+
+    @classmethod
+    def load(cls, path: Path) -> "RigProfile":
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        return cls(
+            name=data.get("name", path.stem),
+            frame_width=data.get("frame_width", 1920),
+            frame_height=data.get("frame_height", 1200),
+            frame_rate=data.get("frame_rate", 100),
+            quality=data.get("quality", 21),
+            pfs_path=data.get("pfs_path", ""),
+            output_dir=data.get("output_dir", ""),
+            serial_port=data.get("serial_port", "COM3"),
+            trigger_pins=data.get("trigger_pins", [2, 4, 6, 8, 10, 12]),
+        )
+
+    @staticmethod
+    def list_profiles() -> list[Path]:
+        if not PROFILES_DIR.exists():
+            return []
+        return sorted(PROFILES_DIR.glob("*.yaml"))
 
 
 @dataclass
@@ -16,8 +55,8 @@ class SessionConfig:
     cage: str = ""
     notes: str = ""
 
-    base_data_dir: Path = Path(r"C:\Users\isaac\Desktop\3dpose\data")
-    pfs_path: Path = Path(r"C:\Users\isaac\Desktop\3dpose\data\configs\mono8_1920x1200.pfs")
+    base_data_dir: Path = Path("")
+    pfs_path: Path = Path("")
     serial_port: str = "COM3"
     trigger_pins: list = field(default_factory=lambda: [2, 4, 6, 8, 10, 12])
     frame_rate: int = 100
@@ -33,6 +72,20 @@ class SessionConfig:
             self.mouse_1 = "m1"
         if not self.mouse_2:
             self.mouse_2 = "m2"
+
+    @classmethod
+    def from_profile(cls, profile: RigProfile, **overrides) -> "SessionConfig":
+        return cls(
+            base_data_dir=Path(profile.output_dir) if profile.output_dir else Path(""),
+            pfs_path=Path(profile.pfs_path) if profile.pfs_path else Path(""),
+            serial_port=profile.serial_port,
+            trigger_pins=profile.trigger_pins,
+            frame_rate=profile.frame_rate,
+            frame_width=profile.frame_width,
+            frame_height=profile.frame_height,
+            quality=profile.quality,
+            **overrides,
+        )
 
     @property
     def session_id(self) -> str:

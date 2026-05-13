@@ -3,18 +3,20 @@ from datetime import datetime
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
-    QProgressBar, QFrame, QPushButton, QFileDialog, QSlider,
+    QProgressBar, QFrame, QPushButton, QFileDialog, QSlider, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 
 from gui_app.widgets.toggle_switch import ToggleSwitch
+from gui_app.session_config import RigProfile
 
 
 class SidebarWidget(QWidget):
     calibrate_toggled = pyqtSignal(bool)
     record_toggled = pyqtSignal(bool)
     run_calibration_clicked = pyqtSignal()
+    profile_changed = pyqtSignal(object)
 
     def __init__(self, default_output_dir: str = r"C:\Users\isaac\Desktop\3dpose\data", parent=None):
         super().__init__(parent)
@@ -27,6 +29,22 @@ class SidebarWidget(QWidget):
         title.setFont(QFont("Segoe UI", 13, QFont.Bold))
         title.setStyleSheet("color: #dcdcdc; border: none;")
         layout.addWidget(title)
+
+        # Profile selector
+        self._profile_combo = QComboBox()
+        self._profile_combo.setStyleSheet(
+            "QComboBox { background: #1a1a2e; color: #dcdcdc; border: 1px solid #444; "
+            "border-radius: 3px; padding: 4px 6px; font-size: 11px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #1a1a2e; color: #dcdcdc; selection-background-color: #5078c8; }"
+        )
+        self._profiles: list[RigProfile] = []
+        for path in RigProfile.list_profiles():
+            profile = RigProfile.load(path)
+            self._profiles.append(profile)
+            self._profile_combo.addItem(profile.name)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        layout.addWidget(self._profile_combo)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -204,6 +222,22 @@ class SidebarWidget(QWidget):
         else:
             self._calibrate_toggle.setEnabled(True)
         self.record_toggled.emit(checked)
+
+    def _on_profile_changed(self, index: int):
+        if 0 <= index < len(self._profiles):
+            profile = self._profiles[index]
+            if profile.output_dir:
+                self._output_dir = profile.output_dir
+                self._dir_button.setText(self._truncate_path(self._output_dir))
+                self._dir_button.setToolTip(self._output_dir)
+            self.profile_changed.emit(profile)
+
+    @property
+    def current_profile(self) -> RigProfile:
+        idx = self._profile_combo.currentIndex()
+        if 0 <= idx < len(self._profiles):
+            return self._profiles[idx]
+        return RigProfile()
 
     @property
     def brightness(self) -> int:

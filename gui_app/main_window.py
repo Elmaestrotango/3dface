@@ -12,7 +12,7 @@ from gui_app.camera_manager import CameraManager
 from gui_app.serial_controller import TeensyController
 from gui_app.encode_worker import EncodeWorker
 from gui_app.calibration_worker import CalibrationWorker
-from gui_app.session_config import SessionConfig
+from gui_app.session_config import SessionConfig, RigProfile
 from gui_app.widgets.camera_grid import CameraGridWidget
 from gui_app.widgets.sidebar import SidebarWidget
 
@@ -67,30 +67,53 @@ class MainWindow(QMainWindow):
         self._sidebar.calibrate_toggled.connect(self._on_calibrate_toggle)
         self._sidebar.record_toggled.connect(self._on_record_toggle)
         self._sidebar.run_calibration_clicked.connect(self._on_run_calibration)
+        self._sidebar.profile_changed.connect(self._on_profile_changed)
         self._camera_mgr.error.connect(self._on_camera_error)
 
         self._display_timer = QTimer()
         self._display_timer.timeout.connect(self._refresh_displays)
         self._display_timer.start(33)
 
-        pfs = str(SessionConfig().pfs_path)
-        if self._camera_mgr.open_all(pfs):
-            n = self._camera_mgr.num_cameras
-            self._camera_grid.setup_grid(n)
-            self._camera_names = [f"cam{i+1}" for i in range(n)]
-        else:
-            self._camera_grid.setup_grid(0)
-            self._camera_names = []
-            QTimer.singleShot(100, lambda: QMessageBox.warning(
-                self, "Camera Error", "No cameras found. Check connections."))
+        self._profile = self._sidebar.current_profile
+        self._open_cameras()
+        self._size_to_screen()
+        self._sidebar.set_status("IDLE", "#888")
 
+    def _open_cameras(self):
+        pfs = self._profile.pfs_path
+        if pfs and Path(pfs).exists():
+            if self._camera_mgr.open_all(pfs):
+                n = self._camera_mgr.num_cameras
+                self._camera_grid.setup_grid(n)
+                self._camera_names = [f"cam{i+1}" for i in range(n)]
+                return
+        self._camera_grid.setup_grid(0)
+        self._camera_names = []
+        QTimer.singleShot(100, lambda: QMessageBox.warning(
+            self, "Camera Error", "No cameras found or .pfs missing. Check connections and profile."))
+
+    def _size_to_screen(self):
+        screen = QApplication.primaryScreen().availableGeometry()
         sidebar_w = 260
         grid_aspect = self._camera_grid.grid_aspect()
-        target_h = 700
+        target_h = int(screen.height() * 0.8)
         target_w = int(target_h * grid_aspect) + sidebar_w
+        if target_w > screen.width() * 0.9:
+            target_w = int(screen.width() * 0.9)
+            target_h = int((target_w - sidebar_w) / grid_aspect)
         self.resize(target_w, target_h)
+        self.move(
+            (screen.width() - target_w) // 2 + screen.x(),
+            (screen.height() - target_h) // 2 + screen.y(),
+        )
 
-        self._sidebar.set_status("IDLE", "#888")
+    def _on_profile_changed(self, profile: RigProfile):
+        if self._state != State.IDLE:
+            return
+        self._camera_mgr.close_all()
+        self._profile = profile
+        self._open_cameras()
+        self._size_to_screen()
 
     def _apply_theme(self):
         app = QApplication.instance()
@@ -132,7 +155,8 @@ class MainWindow(QMainWindow):
 
     def _build_config(self) -> SessionConfig:
         vals = self._sidebar.get_field_values()
-        return SessionConfig(
+        return SessionConfig.from_profile(
+            self._profile,
             date=vals["date"],
             mouse_1=vals["mouse_1"],
             mouse_2=vals["mouse_2"],
@@ -183,10 +207,11 @@ class MainWindow(QMainWindow):
 
         self._camera_mgr.start_acquisition(raw_paths)
 
+        self._teensy = TeensyController(port=self._profile.serial_port)
         if not self._teensy.open():
             self._on_camera_error("Could not open serial port")
             return
-        self._teensy.start_triggers(self._config.trigger_pins, self._config.frame_rate)
+        self._teensy.start_triggers(self._profile.trigger_pins, self._profile.frame_rate)
 
         self._sidebar.set_fields_editable(False)
         if acq_type == "calibration":
@@ -197,7 +222,7 @@ class MainWindow(QMainWindow):
             self._sidebar.set_status("RECORDING", "#ff4444")
 
     def _stop_acquisition(self):
-        self._teensy.stop_triggers(self._config.trigger_pins)
+        self._teensy.stop_triggers(self._profile.trigger_pins)
         self._teensy.close()
 
         cam_results = self._camera_mgr.stop_acquisition()
@@ -332,7 +357,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._display_timer.stop()
         if self._state in (State.CALIBRATING, State.RECORDING):
-            self._teensy.stop_triggers(self._config.trigger_pins)
+            self._teensy.stop_triggers(self._profile.trigger_pins)
             self._teensy.close()
         self._camera_mgr.close_all()
         if self._encode_worker and self._encode_worker.isRunning():
