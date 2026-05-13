@@ -217,13 +217,17 @@ class MainWindow(QMainWindow):
             for cam in self._camera_names
         ]
 
+        print(f"[acq] start_acquisition({acq_type}): switching cameras to trigger mode", flush=True)
         self._camera_mgr.start_acquisition(raw_paths)
 
+        print(f"[acq] opening teensy on {self._profile.serial_port}", flush=True)
         self._teensy = TeensyController(port=self._profile.serial_port)
         if not self._teensy.open():
             self._on_camera_error("Could not open serial port")
             return
+        print(f"[acq] sending start_triggers pins={self._profile.trigger_pins} fps={self._profile.frame_rate}", flush=True)
         self._teensy.start_triggers(self._profile.trigger_pins, self._profile.frame_rate)
+        print(f"[acq] start_acquisition done", flush=True)
 
         self._sidebar.set_fields_editable(False)
         if acq_type == "calibration":

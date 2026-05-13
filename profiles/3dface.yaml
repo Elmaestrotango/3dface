@@ -6,9 +6,8 @@ frame_height: 800
 frame_rate: 100
 quality: 21
 
-# Update this path to point to the facial rig's existing .pfs file
-pfs_path: ""
-output_dir: "C:\\Users\\isaac\\Desktop\\3dpose\\data"
+pfs_path: "C:\\Users\\itang\\Desktop\\3dpose\\configs\\mono8_mono.pfs"
+output_dir: "C:\\Users\\itang\\Desktop\\3dpose\\data"
 
 serial_port: COM3
 trigger_pins: [2, 4, 6, 8, 10, 12]

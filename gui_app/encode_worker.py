@@ -46,11 +46,17 @@ class EncodeWorker(QThread):
                 self.progress.emit(i + 1, total)
                 continue
 
-            mp4_name = f"{self._date}-{self._session_id}-{cam}-{self._acq_type}.mp4"
-            mp4_path = cam_dir / mp4_name
-
             n_bytes = os.path.getsize(raw_path)
             n_frames = n_bytes // (self._w * self._h)
+
+            if n_frames == 0:
+                os.remove(raw_path)
+                results.append((cam, 0, False))
+                self.progress.emit(i + 1, total)
+                continue
+
+            mp4_name = f"{self._date}-{self._session_id}-{cam}-{self._acq_type}.mp4"
+            mp4_path = cam_dir / mp4_name
 
             cmd = [
                 FFMPEG, "-y",
@@ -68,10 +74,12 @@ class EncodeWorker(QThread):
             ]
 
             try:
-                subprocess.run(cmd, check=True, capture_output=True, startupinfo=_STARTUPINFO)
+                subprocess.run(cmd, check=True, capture_output=True, startupinfo=_STARTUPINFO,
+                               timeout=max(60, n_frames // 30))
                 os.remove(raw_path)
                 results.append((cam, n_frames, True))
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                print(f"[encode] {cam} failed: {type(e).__name__}", flush=True)
                 results.append((cam, n_frames, False))
 
             self.progress.emit(i + 1, total)

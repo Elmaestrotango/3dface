@@ -75,7 +75,7 @@ class SessionConfig:
 
     @classmethod
     def from_profile(cls, profile: RigProfile, **overrides) -> "SessionConfig":
-        return cls(
+        defaults = dict(
             base_data_dir=Path(profile.output_dir) if profile.output_dir else Path(""),
             pfs_path=Path(profile.pfs_path) if profile.pfs_path else Path(""),
             serial_port=profile.serial_port,
@@ -84,8 +84,9 @@ class SessionConfig:
             frame_width=profile.frame_width,
             frame_height=profile.frame_height,
             quality=profile.quality,
-            **overrides,
         )
+        defaults.update(overrides)
+        return cls(**defaults)
 
     @property
     def session_id(self) -> str:
