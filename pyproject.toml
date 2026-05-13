@@ -1,0 +1,19 @@
+[project]
+name = "panopticon"
+version = "0.1.0"
+description = "Multi-camera acquisition GUI for 3D pose estimation"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "pypylon>=26.0",
+    "PyQt5>=5.15",
+    "PyQt5-Qt5==5.15.2",
+    "numpy>=2.0",
+    "pyserial>=3.5",
+    "pyyaml>=6.0",
+    "imageio-ffmpeg>=0.5",
+    "psutil>=5.9",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+panopticon = "gui:main"

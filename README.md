@@ -1,311 +1,229 @@
-# 3D Pose — Freely-Moving Social Behavior
+# Panopticon
 
-This document describes the 3D full-body pose arm of the Despotism project. Mice are recorded during social interaction in open arenas using multi-view synchronized cameras, yielding 3D skeletal pose trajectories via SLEAP + stac-mjx. The goal is to capture detailed body kinematics during naturalistic and structured social behaviors — open field interaction, tube test, and any future assay — to complement the homecage-monitoring and head-fixed facial-expression arms.
+Multi-camera synchronized acquisition GUI for 3D pose estimation. Records from 6-12 Basler cameras at 100 fps with hardware-triggered synchronization, raw-to-disk capture, and post-hoc NVENC encoding.
 
-For the project-level overview, see `~/.claude/despotism.md`. For the homecage-monitoring arm, see `~/notebooks-kay/despotism/id_switch/README.md`. For the head-fixed facial-expression arm, see `~/notebooks-kay/despotism/3dface/README.md`.
+## Quick Start
+
+```bash
+git clone https://github.com/Elmaestrotango/3dpose.git
+cd 3dpose
+uv sync
+uv run python gui.py
+```
+
+Or double-click `Panopticon.lnk` on the Desktop (created during setup).
+
+## Prerequisites
+
+1. **uv** — Python package manager: https://docs.astral.sh/uv/getting-started/installation/
+2. **Basler Pylon SDK** — install from https://www.baslerweb.com/en/downloads/software-downloads/ (needed for GigE camera drivers and the pylon filter driver)
+3. **NVIDIA GPU** with driver 550+ (for NVENC H.264 encoding)
+4. **Teensy/Arduino** with `campy/campy/trigger/trigger.ino` flashed via Arduino IDE
+
+## Installation
+
+```bash
+git clone https://github.com/Elmaestrotango/3dpose.git
+cd 3dpose
+uv sync
+```
+
+This creates a `.venv` with all Python dependencies (pypylon, PyQt5, numpy, etc.). No conda required.
+
+### First-time setup on a new machine
+
+1. **Generate camera settings**: connect cameras, then run:
+   ```bash
+   uv run python _gen_pfs.py
+   ```
+   This saves a `.pfs` file matched to your camera model.
+
+2. **Configure camera IPs** (GigE cameras only):
+   ```powershell
+   # Run as Administrator
+   & "C:\Program Files\Basler\pylon\Runtime\x64\PylonGigEConfigurator.exe" auto-all
+   ```
+
+3. **Add firewall rule** (GigE cameras only):
+   ```powershell
+   # Run as Administrator
+   New-NetFirewallRule -DisplayName PanopticonGigE -Direction Inbound -Action Allow -Protocol UDP -Program <path-to-.venv\Scripts\python.exe>
+   ```
+
+4. **Create a Desktop shortcut** (optional):
+   - Right-click Desktop > New > Shortcut
+   - Target: `<repo-path>\_launch.bat`
+   - Change icon to `<repo-path>\panopticon.ico`
+
+### Rig Profiles
+
+Each camera rig has a YAML profile in `profiles/`:
+
+```yaml
+# profiles/3dpose.yaml
+name: 3dpose
+frame_width: 1920
+frame_height: 1200
+frame_rate: 100
+quality: 21
+pfs_path: "C:\\path\\to\\mono8_1920x1200.pfs"
+output_dir: "C:\\path\\to\\data"
+serial_port: COM3
+trigger_pins: [2, 4, 6, 8, 10, 12]
+```
+
+The GUI has a profile dropdown to switch between rigs. To add a new rig, copy an existing profile and update the values.
 
 ---
 
-## Behavioral Contexts
+## Usage
 
-| Assay | Description |
-|-------|-------------|
-| **Open field** | Two mice freely interacting in an open arena; captures approach, investigation, aggression, mounting, allogrooming, etc. |
-| **Tube test** | Standardized dominance assay; two mice enter opposite ends of a tube, dominant mouse pushes subordinate out |
-| **Other** | Pipeline is designed to generalize to any social or solitary behavior captured with this camera rig |
+### Recording
+
+1. Launch the GUI (`uv run python gui.py` or Desktop shortcut)
+2. Select the rig profile from the dropdown
+3. Fill in session metadata (date, mouse IDs, assay, etc.)
+4. Flip **Calibrate** toggle to record calibration videos (ChArUco board)
+5. Flip it off — videos encode in the background
+6. Click **Solve** to run sleap-anipose calibration
+7. Flip **Record** toggle to record behavioral data
+8. Flip it off — videos encode, `calibration.toml` copied to recording dir
+
+### Keyboard/Mouse
+
+- **Double-click** a camera view to zoom (fills entire grid area)
+- **Double-click** again to return to grid view
+- **Brightness/Contrast** sliders adjust display only (not recorded data)
+
+### Output Structure
+
+```
+data/
+  YYYYMMDD/
+    mouse1_mouse2/
+      calibration/
+        cam1/ ... cam6/     (MP4 videos + frametimes.npy)
+        calibration.toml    (camera parameters)
+        board.toml          (ChArUco board definition)
+      recording/
+        cam1/ ... cam6/     (MP4 videos + frametimes.npy)
+        calibration.toml    (copied from calibration/)
+      session_metadata.json
+```
 
 ---
 
-## Recording Setup
+## Architecture
 
-- **Cameras**: 6x Basler mono8 (initial), expandable to 12
-- **Resolution**: 1920x1200
-- **Frame rate**: 100 fps
-- **Synchronization**: Hardware trigger via Arduino/Teensy — Campy sends serial start command, microcontroller generates synchronized TTL pulses to all cameras on rising edge
-- **Acquisition software**: [Campy](https://github.com/ksseverson57/campy) — multi-camera GPU-accelerated video acquisition
-- **Encoding**: H.264 via Nvidia GPU, same as 3dface arm
-- **Arena**: 3 ft x 3 ft platform with transparent walls and floor (enables below-platform camera views)
-- **Identity**: Mice have headplates; identifying markers attached to headplates. Multi-view coverage further reduces ID swaps
+### Raw Capture + Post-Hoc Encoding
 
-### Campy trigger protocol
+The GUI bypasses campy and uses pypylon directly. During recording, raw mono8 frames are written to disk at 100 fps. After recording, ffmpeg encodes them to H.264 via NVENC.
 
-Campy communicates with the Arduino/Teensy over serial (115200 baud). A single comma-separated ASCII string configures and starts triggering:
+**Why not real-time encoding?** At 1920x1200, ffmpeg's CPU-side gray-to-yuv420p pixel conversion bottlenecks at ~80 fps for 6 cameras. At 800x800, real-time encoding works fine (145+ fps proven). Raw-to-disk achieves 100 fps at any resolution.
 
-- **Start**: `<num_pins>,<pin0>,<pin1>,...,<pinN>,<frame_rate>` (e.g. `6,2,4,6,8,10,12,100`)
-- **Stop**: same format with frame rate set to `-1`
+**Storage**: ~138 GB raw per camera per 10 minutes. 6 cameras = ~830 GB temp. Encodes to ~20-30 GB. Requires a fast NVMe SSD (1.4+ GB/s write speed).
 
-The microcontroller generates a 50% duty cycle square wave on all configured pins simultaneously (~30 ns cross-pin synchronicity). Each rising edge triggers one frame capture on all cameras via their hardware trigger input line.
+### Camera Modes
 
-In the acquisition notebook, `startArduino` is set to `False`. Campy launches and initializes all cameras first, then the notebook sends the serial start command when the user presses Enter — ensuring all cameras are grabbing from frame 1. Pressing Enter again sends the stop command.
+- **Idle**: `TriggerMode=Off`, free-run at 30 fps for live preview
+- **Acquiring**: `TriggerMode=On`, `TriggerSource=Line1`, hardware triggered at 100 fps
+- Mode switching happens in-place via `StopGrabbing() -> reconfigure -> StartGrabbing()`
 
-### Teensy wiring
+### Frame Synchronization
+
+All cameras receive the same TTL trigger pulse from the Teensy (~30 ns cross-pin skew). After stopping triggers, all cameras' data is truncated to the minimum frame count to ensure identical counts for triangulation.
+
+### Calibration
+
+Uses [sleap-anipose](https://github.com/talmolab/sleap-anipose) via `uv run` (separate dependency environment). Calibration videos are subsampled to 200 frames before processing to keep solve time under 2 minutes.
+
+---
+
+## Troubleshooting
+
+### Cameras not found
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "No cameras found" on launch | Wrong profile selected | Switch profile dropdown to one with a valid `.pfs` path |
+| "No cameras found" on launch | GigE cameras not on same subnet | Run `PylonGigEConfigurator auto-ip` as Administrator |
+| "No cameras found" on launch | Firewall blocking UDP discovery | Add firewall rule for `.venv\Scripts\python.exe` (see setup) |
+| "No cameras found" on launch | Cameras held by another app | Close PylonViewer, kill stale Python processes, restart GUI |
+| Cameras found but 0 fps | Teensy not flashed or not connected | Flash `trigger.ino`, check COM port in profile |
+
+### Serial port errors
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Could not open COM3" | Port held by previous run | GUI auto-retries 10 times. If still stuck, restart the GUI. |
+| "Could not open COM3" | Arduino Serial Monitor open | Close Serial Monitor before using the GUI |
+| "Could not open COM3" | Wrong COM port | Update `serial_port` in the profile YAML |
+
+### Recording issues
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Frame counts differ between cameras | Normal (±5 frames from GigE timing) | Data is auto-truncated to min count. No action needed. |
+| Very low fps during recording | `AcquisitionFrameRate` too low in `.pfs` | Regenerate `.pfs` with `AcquisitionFrameRate=165` |
+| Videos won't open after recording | Encoding failed | Check for ffmpeg errors in the status bar. Verify NVIDIA drivers. |
+| Encoding very slow | CPU doing pixel conversion | Expected for 1920x1200 (~2-3 min per 10-min recording). Normal. |
+
+### Calibration issues
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "0 boards detected" | Wrong board parameters | Update `BOARD_X`, `BOARD_Y`, `SQUARE_LENGTH`, `MARKER_LENGTH` in `1_calibrate.py` |
+| "0 boards detected" | No ChArUco board in video | Record actual calibration footage with the board visible to all cameras |
+| Calibration takes forever | Processing all frames | Default subsamples to 200 frames. Use `--max-frames` to adjust. |
+| numpy ABI error | Version conflict | `1_calibrate.py` pins `numpy<2`. Run `uv cache clean` and retry. |
+| sleap-anipose directory error | Non-camera dirs in calibration/ | Auto-excluded. Delete stale `reprojections/` if issues persist. |
+
+---
+
+## Teensy Wiring
 
 | Teensy Pin | Destination |
 |---|---|
-| **USB** | Computer (COM3) |
-| **2** | cam1 Line1 (trigger input) |
-| **4** | cam2 Line1 |
-| **6** | cam3 Line1 |
-| **8** | cam4 Line1 |
-| **10** | cam5 Line1 |
-| **12** | cam6 Line1 |
-| **13** | Stim Arduino interrupt (optional, for neural sync) |
-| **GND** | Camera GND (shared) |
+| USB | Computer (COM3, 115200 baud) |
+| 2, 4, 6, 8, 10, 12 | Camera Line1 trigger inputs (one per camera) |
+| 13 | Stim Arduino interrupt pin (optional, for neural sync) |
+| GND | Camera GND (shared) |
 
-Flash `campy/campy/trigger/trigger.ino` to the Teensy via the Arduino IDE.
-
-### Campy config
-
-Production config: `data/configs/3dpose_6cams.yaml`. Camera settings: `data/configs/mono8_1920x1200.pfs`.
-
-Key settings:
-- **Pixel format**: Mono8 (gray in, gray out) — IR illumination, no color needed
-- **Compression**: H.264 via NVENC (`h264_nvenc`), quality 21, on GPU 0
-- **Trigger**: `startArduino: False` — cameras initialize first, then the notebook sends a serial start command to the Teensy when the user presses Enter. This ensures all cameras are ready before the first frame.
-- **Serial**: COM3 at 115200 baud, digital pins 2,4,6,8,10,12
-
-When expanding to 12 cameras, update `numCams`, `cameraSelection`, `cameraNames`, `gpuID`, and add digital pins as needed (Teensy has many digital output pins available).
+Serial protocol: `6,2,4,6,8,10,12,100` (start at 100 fps), `6,2,4,6,8,10,12,-1` (stop).
 
 ---
 
-## Calibration
-
-Multi-view calibration is required before each session (or whenever the camera geometry changes). A ChArUco board is slowly moved through the shared field of view to compute per-camera intrinsics and extrinsics.
-
-### Recording calibration videos
-
-Use the calibration section of `0a_acquire.ipynb` (optional — skip if cameras haven't moved). This records ChArUco board videos into `<session>/calibration/cam1/`, `cam2/`, etc.
-
-### Running calibration
-
-Calibration is processed post-hoc using `1_calibrate.py`, which uses [sleap-anipose](https://github.com/talmolab/sleap-anipose). Dependencies are managed inline via `uv` — no conda env needed:
-
-```bash
-uv run 1_calibrate.py <session_dir>
-# e.g. uv run 1_calibrate.py data/20260511/slmc001_slmc002
-```
-
-**Board**: ChArUco 5x5, ArUco 4x4_1000 dictionary, square_length=24.0 mm, marker_length=18.75 mm.
-
-**Outputs**: `calibration.toml` (camera parameters), `calibration_metadata.h5`, reprojection error histogram, reprojection images — all written to the `calibration/` subdirectory.
-
----
-
-## Camera Geometry (6-camera configuration)
+## File Structure
 
 ```
-            Top view (looking down)
-        ┌─────────────────────────┐
-        │                         │
-        │     ③        ②          │
-        │       ╲    ╱            │
-        │        ╲  ╱             │
-        │    ④────①────          │
-        │        (↓)              │
-        │     3ft × 3ft arena     │
-        │   transparent walls     │
-        │   + transparent floor   │
-        │                         │
-        └─────────────────────────┘
-
-            Side view (cross-section)
-                ②  ①  ③
-               ╱   ↓   ╲         ← above: 45° angled (②③④)
-              ╱    ↓    ╲                  + 1 straight down (①)
-    ─────────┼──────────┼─────── ← transparent platform
-              ╲         ╱
-               ⑤       ⑥         ← below: 45° angled upward
-```
-
-**Above the arena (4 cameras):**
-| Camera | Position | Angle |
-|--------|----------|-------|
-| **①** | Directly above center | Straight down (0°) — matches existing top-down behavioral data in the lab |
-| **②** | Above, offset | 45° down, positioned at 0° azimuth |
-| **③** | Above, offset | 45° down, positioned at 120° azimuth |
-| **④** | Above, offset | 45° down, positioned at 240° azimuth |
-
-**Below the arena (2 cameras):**
-| Camera | Position | Angle |
-|--------|----------|-------|
-| **⑤** | Below, offset | 45° up, positioned at 0° azimuth |
-| **⑥** | Below, offset | 45° up, positioned at 180° azimuth |
-
-This geometry guarantees at least 3 cameras viewing each mouse at all times, even during close social interaction. The transparent floor enables the below-platform views, which capture paw placement and ventral body features that top-down views miss.
-
-The top-down camera (①) provides continuity with existing lab datasets that use overhead-only recording for behavioral classification.
-
-### Illumination
-
-5 IR panels, offset similarly to the angled cameras (rotated slightly to avoid direct reflection into lenses):
-- 3 panels above the arena
-- 2 panels below the arena (illuminating through transparent floor)
-
-IR illumination is invisible to the mice and provides even lighting across all camera views without interfering with behavioral protocols.
-
----
-
-## Pipeline
-
-```
-Multi-view video (6-12 cameras, 1920x1200, 100 fps)
-    │
-    ▼
-SLEAP — 2D pose estimation per camera view
-    │
-    ▼
-stac-mjx — 3D skeletal pose reconstruction
-    │       (physics-informed MuJoCo model,
-    │        fits skeleton to multi-view 2D detections)
-    │
-    ▼
-3D pose trajectories (per-frame 3D joint positions + body model state)
-    │
-    ▼
-Behavioral analysis
-```
-
-### SLEAP (2D pose estimation)
-
-Per-camera 2D keypoint detection. Train on labeled frames exported from a multi-view labeling tool (e.g., LUC3D or per-view SLEAP GUI). One model per camera view or a shared model across views, depending on view similarity.
-
-**Skeleton**: Custom high-granularity skeleton (not the standard SLEAP mouse body skeleton). The multi-view coverage supports tracking finer landmarks that would be unreliable from a single view:
-- Standard body landmarks (nose, ears, head, spine, tail base/mid/tip)
-- Paws (4x)
-- Elbows/wrists, knees/ankles
-- Additional landmarks TBD based on labeling feasibility and stac-mjx model requirements
-
-### stac-mjx (3D skeletal reconstruction)
-
-[stac-mjx](https://github.com/talmolab/stac-mjx) fits a physics-based MuJoCo skeleton model to multi-view 2D pose detections. Unlike pure triangulation (used in the 3dface arm), stac-mjx enforces skeletal constraints (bone lengths, joint limits, collision avoidance), producing physically plausible 3D body configurations even under occlusion. This is critical for freely-moving social behavior where animals frequently occlude each other.
-
-### Behavioral analysis
-
-Downstream analyses TBD. Potential directions:
-- Social interaction classification from 3D pose features
-- Integration with VQ tokenization / motif pipeline from the HCM arm
-- Cross-assay comparison (open field vs. tube test kinematics)
-
----
-
-## Data Layout
-
-```
-C:\Users\isaac\Desktop\3dpose\data\
-└── YYYYMMDD/
-    └── <mouse1>_<mouse2>/
-        ├── calibration/
-        │   ├── cam1/
-        │   │   └── YYYYMMDD-<session>-cam1-calibration.mp4
-        │   ├── cam2/ ... cam6/
-        │   ├── board.toml              (generated by 1_calibrate.py)
-        │   ├── calibration.toml        (generated by 1_calibrate.py)
-        │   └── calibration_metadata.h5
-        ├── recording/
-        │   ├── cam1/
-        │   │   └── YYYYMMDD-<session>-cam1-recording.mp4
-        │   ├── cam2/ ... cam6/
-        │   └── _campy_config_recording.yaml
-        └── session_metadata.json
-```
-
----
-
-## Differences from 3dface Arm
-
-| | 3dface | 3dpose |
-|---|--------|--------|
-| **Subject state** | Head-fixed | Freely moving |
-| **Body part** | Face only | Full body |
-| **Social context** | Dyadic task (subject + target on platform) | Dyadic free interaction (open field, tube test) |
-| **Resolution** | 800x800 | 1920x1200 |
-| **3D method** | Triangulation (rigid head, no occlusion) | stac-mjx (skeletal model, handles occlusion) |
-| **Cameras** | 6 (all above, face-level) | 6 (4 above + 2 below; expanding to 12) |
-| **Frame rate** | 100 fps | 100 fps |
-| **Skeleton** | Facial landmarks only | Custom high-granularity full-body (paws, joints, etc.) |
-| **Identity** | Single animal (head-fixed) | Headplate markers + multi-view disambiguation |
-
----
-
-## Neural Recording / Stimulation
-
-Mice undergo optogenetic stimulation (and potentially miniscope recording) during free social interaction. A standalone pulse generator drives stim; the recording modality is TBD.
-
-### Trial structure
-
-- Fixed schedule with fixed intervals between stimulation events
-- Jitter applied to inter-stim intervals
-- Trial structure (stim times, intervals, jitter params) defined in the acquisition notebook and uploaded to a dedicated stim Arduino (separate from the camera trigger Teensy)
-
-### Synchronization (two-Arduino architecture)
-
-```
-Camera Teensy                     Stim Arduino
-─────────────                     ────────────
-Digital pins 2,4,6,8,10,12 ──→ Basler cameras (TTL trigger)
-Digital pin 13 (copy) ─────────→ Interrupt pin (frame counter)
-                                  Digital pin N ──→ Pulse generator (stim TTL)
-                                  Digital pin M ──→ IR LED (visual sync)
-                                  Logs: frame_number, event_type → serial
-```
-
-**Frame-count sync**: the camera Teensy sends a copy of the frame trigger TTL to the stim Arduino, which counts rising edges on an interrupt pin. All stim events are logged as `(frame_number, event_type)`, giving exact frame-level alignment with zero clock drift.
-
-**IR LED backup**: the stim Arduino drives an IR LED visible to one camera (LED ON = stim active). Provides visual ground truth for verifying sync.
-
-Post-session outputs:
-- `frametimes.npy` from Campy (per-camera frame timestamps)
-- `session_events.csv` from stim Arduino (`frame_number, event_type, event_code`)
-- IR LED visible in video (verification)
-
----
-
-## Status
-
-- **Rig**: Not yet built. Camera count, placement, and arena geometry TBD.
-- **Campy config**: Done. `data/configs/3dpose_6cams.yaml` (6-camera, mono8, 1920x1200, 100 fps, NVENC H.264) and `data/configs/mono8_1920x1200.pfs` (Basler camera settings with hardware trigger on Line1).
-- **Acquisition notebook**: Done. `0a_acquire.ipynb` — keyboard-triggered start/stop via Teensy serial. Runs in the `3dpose` conda environment.
-- **Calibration script**: Done. `1_calibrate.py` — runs via `uv run`, self-contained dependencies (sleap-anipose). No conda env needed.
-- **SLEAP model**: Not yet trained. Skeleton definition (keypoint set) TBD.
-- **stac-mjx**: Not yet configured. Mouse body model and fitting parameters TBD.
-- **Pipeline scripts**: Will follow the `id_switch/`-style numeric-prefix convention (`{N}{letter}_*.py`, companion notebooks `{N}{letter}n_*.ipynb`).
-
----
-
-## Environment
-
-### Acquisition (`3dpose` conda env)
-
-Used by `0a_acquire.ipynb`. Python 3.11, key packages:
-
-- campy 2.0.1 (editable install from `campy/`)
-- pypylon 26.4.1 (Basler Pylon SDK)
-- imageio-ffmpeg 0.6.0 (bundles ffmpeg 7.1 with h264_nvenc)
-- PyQt5, numpy, pyyaml, pyserial, jupyter
-
-```bash
-conda activate 3dpose
-jupyter notebook 0a_acquire.ipynb
-```
-
-### Calibration (uv-managed, no env needed)
-
-Used by `1_calibrate.py`. Dependencies declared inline (PEP 723):
-
-- sleap-anipose >=0.1.8 (includes aniposelib, opencv-contrib-python, numba)
-
-```bash
-uv run 1_calibrate.py <session_dir>
+gui.py                  Entry point (splash screen + main window)
+_launch.bat             Batch launcher (uv run pythonw)
+panopticon.ico          Application icon
+pyproject.toml          Python dependencies (uv sync)
+1_calibrate.py          Calibration script (uv run, sleap-anipose)
+profiles/               Rig-specific YAML configs
+  3dpose.yaml           6x Basler a2A1920-165g5m GigE
+  3dface.yaml           6x Basler acA1300-200um USB3
+gui_app/
+  main_window.py        Layout, theme, state machine, acquisition flow
+  camera_manager.py     Camera lifecycle, mode switching, grab threads
+  grab_thread.py        Per-camera: grab + raw write + display thumbnail
+  encode_worker.py      Background NVENC encoding with progress
+  calibration_worker.py Background sleap-anipose calibration
+  serial_controller.py  Teensy serial trigger control
+  session_config.py     Profiles, session paths, metadata
+  widgets/
+    camera_grid.py      Dynamic NxM grid, aspect ratio, double-click zoom
+    sidebar.py          Metadata fields, profile selector, toggles, sliders
+    toggle_switch.py    Animated toggle switch widget
+campy/                  Forked campy (submodule, for trigger.ino firmware)
 ```
 
 ---
 
 ## Cross-references
 
-- **Project overview (all arms)**: `~/.claude/despotism.md`
-- **Homecage-monitoring arm**: `~/notebooks-kay/despotism/id_switch/README.md`
-- **Head-fixed facial-expression arm**: `~/notebooks-kay/despotism/3dface/README.md`
-- **Campy (acquisition software)**: https://github.com/ksseverson57/campy
-- **sleap-anipose (calibration)**: https://github.com/talmolab/sleap-anipose
-- **stac-mjx (3D reconstruction)**: https://github.com/talmolab/stac-mjx
-- **F31 grant proposal**: `~/minor_prop/`
+- **Campy fork**: https://github.com/Elmaestrotango/campy
+- **sleap-anipose**: https://github.com/talmolab/sleap-anipose
+- **stac-mjx**: https://github.com/talmolab/stac-mjx
+- **Basler Pylon SDK**: https://www.baslerweb.com/en/downloads/software-downloads/

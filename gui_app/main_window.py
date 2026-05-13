@@ -74,7 +74,19 @@ class MainWindow(QMainWindow):
         self._display_timer.timeout.connect(self._refresh_displays)
         self._display_timer.start(33)
 
+        # Find best profile (first with valid pfs), block signals during selection
         self._profile = self._sidebar.current_profile
+        for i, prof in enumerate(self._sidebar._profiles):
+            if prof.pfs_path and Path(prof.pfs_path).exists():
+                self._sidebar._profile_combo.blockSignals(True)
+                self._sidebar._profile_combo.setCurrentIndex(i)
+                self._sidebar._profile_combo.blockSignals(False)
+                self._profile = prof
+                if prof.output_dir:
+                    self._sidebar._output_dir = prof.output_dir
+                    self._sidebar._dir_button.setText(self._sidebar._truncate_path(prof.output_dir))
+                    self._sidebar._dir_button.setToolTip(prof.output_dir)
+                break
         self._open_cameras()
         self._size_to_screen()
         self._sidebar.set_status("IDLE", "#888")

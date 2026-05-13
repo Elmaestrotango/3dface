@@ -5,3 +5,4 @@ __pycache__/
 _gen_pfs.py
 _*.py
 campy/.git/
+.venv/
