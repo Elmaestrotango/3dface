@@ -1,0 +1,7 @@
+board_x: 5
+board_y: 5
+square_length: 0.5    # mm
+marker_length: 0.4    # mm
+marker_bits: 4
+dict_size: 1000
+max_frames: 200
